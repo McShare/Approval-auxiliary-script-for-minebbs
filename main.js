@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         MineBBS 辅助审核脚本
+// @name         MineBBS风纪委员会审核综合增强
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      3.2
 // @description  提高审核效率, 风纪委员先行!
 // @author       乱杖先生
 // @license MIT
@@ -12,8 +12,8 @@
 // @connect      raw.githubusercontent.com
 // @connect      ipinfo.io
 // @connect      ip.cn
+// @connect      api.oioweb.cn
 // @connect      127.0.0.1
-// @connect      mienbbs.goldlog.net
 // @grant GM_xmlhttpRequest
 // @grant GM_setValue
 // @grant GM_getValue
@@ -24,22 +24,21 @@
 // ==/UserScript==
 
 
-/*
- *  插件基础数据
- */
-// 违禁词的API
-const PROHIBITEDWORDS_URL = 'http://127.0.0.1:8787/api/prohibitedWords';
-// 插件初始化自带的邮箱内容
-const EMAIL = 'outlook.com;gmail.com;foxmail.com;qq.com;vip.qq.com;163.com;vip.163.com;126.com;vip.126.com;sina.com;sina.cn;yeah.net;189.cn;139.com;wo.cn;game.com;163vip.com;tom.com;vip.tom.com;sohu.com'
-// 插件初始化自带的名称违禁词内容
-const PROHIBITEDWORDS_NAME = '';
-// 插件初始化自带的内容违禁词内容
-const PROHIBITEDWORDS_CONTENT = '';
+// 违禁词的API 
+const PROHIBITEDWORDS_URL = 'http://127.0.0.1/api/prohibitedWords';
+// 通过审核的按钮文字
+const AUTO_APPROVE_BUTTON_TEXT = '通过审核';
+// 无操作的按钮文字
+const NO_OPERATION_BUTTON_TEXT = '无操作';
+// 分批次处理内容
+const BATCH_SIZE = 10; 
+// 分批次处理IP
+const BATCH_SIZE_IP = 20;
 
 
 /*
- *   配置类
- */
+     配置类
+*/
 class Config {
     emailMode = true;
     shortContentAccurateMode = true;
@@ -50,6 +49,7 @@ class Config {
     #shortContentTextProhibitedWords = [];
     #longContentTextProhibitedWords = [];
     #emailList = [];
+
     get shortContentTextProhibitedWords() {
         return this.#shortContentTextProhibitedWords.join(';');
     }
@@ -106,17 +106,19 @@ class Config {
     }
 }
 
+
 // 创建配置对象
 const conf = new Config();
 // 获取加载旗帜, 用于判断是否为首次加载
 const loadflag = GM_getValue("minebbs:loadflag", 0);
 if (!loadflag) {
     GM_log('初始化:首次载入插件, 即将开始初始化!');
-    // =========== 插件提供的原始数据(START) =============
-    conf.emailList = EMAIL;
-    conf.shortContentTextProhibitedWords = PROHIBITEDWORDS_NAME;
-    conf.longContentTextProhibitedWords = PROHIBITEDWORDS_CONTENT;
+
+    // =========== 插件提供的原始数据(START) ===============
+    // 提供默认的邮箱后缀
+    conf.emailList = 'petalmail.com;hotmail.com;outlook.com;gmail.com;foxmail.com;qq.com;vip.qq.com;163.com;vip.163.com;126.com;vip.126.com;sina.com;sina.cn;yeah.net;189.cn;139.com;wo.cn;game.com;163vip.com;tom.com;vip.tom.com;sohu.com'
     // =========== 插件提供的原始数据(END) ===============
+
     // 持久化数据
     conf.saveData();
     GM_log('初始化:配置数据持久化完成!');
@@ -124,10 +126,9 @@ if (!loadflag) {
     // 插加载旗
     GM_setValue("minebbs:loadflag", 1);
 }else{
+    // 加载数据
     conf.getData();
 }
-
-
 
 /**
  * 记录自动批准的次数
@@ -136,9 +137,12 @@ if (!loadflag) {
  */
 function approvalFrequency(num = 0) {
     let approval_frequency = GM_getValue("minebbs:approval_frequency", 0);
+    // 如果默认为0,表示是读取次数
     if (num == 0) {
+        // 获取批准次数,没有就返回 0 
         return approval_frequency;
     }
+    // 不是-1表示存储
     GM_setValue("minebbs:approval_frequency", approval_frequency + num)
     return GM_getValue("minebbs:approval_frequency", 0);
 }
@@ -211,37 +215,12 @@ function createElement_simpleBlock() {
 function createElement_simplButton(text, callback) {
     let el = document.createElement('button');
     el.setAttribute('type', 'button');
-    el.setAttribute('data-xf-init', 'push-toggle');
     el.classList.add("button", "rippleButton")
     let text_el = document.createElement('span')
     text_el.classList.add("button-text");
     text_el.innerText = text;
     el.appendChild(text_el);
     el.style.marginRight = '0.4vh'
-    var initialColor = window.getComputedStyle(el).backgroundColor;
-    function hexToRgb(hex) {
-        var result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-        return result ? [
-            parseInt(result[1], 16),
-            parseInt(result[2], 16),
-            parseInt(result[3], 16)
-        ] : null;
-    }
-    function desaturateColor(rgb, amount) {
-        var avg = (rgb[0] + rgb[1] + rgb[2]) / 3;
-        var gray = Math.round(avg * (100 - amount) / 100);
-        return `rgb(${gray}, ${gray}, ${gray})`;
-    }
-    el.addEventListener('mouseenter', function () {
-        var rgb = hexToRgb(initialColor);
-        if (rgb) {
-            var desaturatedColor = desaturateColor(rgb, 10);  
-            el.style.backgroundColor = desaturatedColor;
-        }
-    });
-    el.addEventListener('mouseleave', function () {
-        el.style.backgroundColor = initialColor;
-    });
     el.addEventListener('click', callback);
     return el;
 }
@@ -251,6 +230,7 @@ function createElement_simplButton(text, callback) {
  * @param {*} title  标题
  */
 function createElement_simpleContainerOfSetting(title) {
+    // 创建容器
     let overlayContainer = document.createElement('div');
     overlayContainer.classList.add('overlay-container', 'is-active');
     overlayContainer.setAttribute('id', 'mb-container');
@@ -263,12 +243,13 @@ function createElement_simpleContainerOfSetting(title) {
         }
 
     })
+    // 允许遮罩层滚动
     overlayContainer.style.overflowY = 'auto';
     let overlay = document.createElement('div');
     overlay.classList.add("overlay");
     overlay.setAttribute('tabindex', '-1');
-    overlay.setAttribute('role', 'dialog');
-    overlay.setAttribute('aria-hidden', 'false');
+    overlay.setAttribute('role', 'dialog')
+    overlay.setAttribute('aria-hidden', 'false')
     let overlayTitle = document.createElement('div');
     overlayTitle.classList.add("overlay-title");
     let overlayTitleText = document.createTextNode(title);
@@ -281,7 +262,7 @@ function createElement_simpleContainerOfSetting(title) {
     overlayTitle.appendChild(overlayTitleText);
     overlayCloseBtn.addEventListener('click', () => {
         overlayContainer.remove();
-    });
+    })
     let overlayContent = document.createElement('div');
     overlayContent.classList.add("overlay-content");
     let block = document.createElement('div');
@@ -335,7 +316,7 @@ function createElement_simpleContainerOfSetting(title) {
         'callback': function () {
             for (let i = 0; i < blockArrayList.length - 1; i++) {
                 let block = blockArrayList[i];
-                selectOperation(block, "无操作");
+                selectOperation(block, NO_OPERATION_BUTTON_TEXT);
                 overlayContainer.remove();
             }
             GM_log("'一键无操作完成!");
@@ -507,18 +488,18 @@ function createFormRow_Button(labelObj = { text, hint }, buttons = [{ 'text': '�
         span.textContent = btn_obj['text'];
         a.addEventListener('click', btn_obj['callback']);
         a.addEventListener('mouseover', function () {
-            this.style.textDecoration = 'none'; // 当鼠标悬浮在a标签上时，移除下划线  
+            this.style.textDecoration = 'none';
         });
         a.appendChild(span);
         li.appendChild(a);
         ul.appendChild(li);
+
     }
     dd.appendChild(ul);
     dl.appendChild(dd);
     return dl;
 }
 
-// 信息
 function createFormRow_Info(labelObj = { text: '普通信息', hint: '调试' }, textObj = { default: '暂无消息' }) {
     const dl = createElementWithClass('dl', 'formRow');
     const dt = document.createElement('dt');
@@ -562,7 +543,7 @@ function createElement_saveButton(text, callback) {
     const formSubmitRowControls = createElementWithClass('div', 'formSubmitRow-controls');
     const button = createElementWithClass('button', 'button--primary button button--icon button--icon--save');
     setAttribute(button, 'type', 'submit');
-    button.textContent = text; 
+    button.textContent = text;
     button.addEventListener('mouseup', callback)
     formSubmitRowControls.appendChild(button);
     formSubmitRowMain.appendChild(formSubmitRowControls);
@@ -573,7 +554,7 @@ function createElement_saveButton(text, callback) {
 
 
 // 选择点击
-function selectOperation(blockElement, text = '无操作') {
+function selectOperation(blockElement, text = NO_OPERATION_BUTTON_TEXT) {
     let btnArrayList = blockElement.querySelectorAll('.iconic--radio');
     let flag = false;
     for (let i = 0; i < btnArrayList.length; i++) {
@@ -586,7 +567,7 @@ function selectOperation(blockElement, text = '无操作') {
                 blockContainer.classList.remove(blockContainer.classList[i]);
             }
         }
-        if (text == "批准") {
+        if (text == AUTO_APPROVE_BUTTON_TEXT) {
             blockContainer.classList.add('approvalQueue-item--approve')
         } else if (text == '删除') {
             blockContainer.classList.add('approvalQueue-item--delete')
@@ -601,18 +582,48 @@ function selectOperation(blockElement, text = '无操作') {
 
 // 提取ip和邮箱
 function extractIPAndEmail(divElement) {
-    var aTag = divElement.querySelector('a');
-    var ipAddress = aTag ? aTag.textContent.trim() : null;
-    var emailAddress = null;
-    if(ipAddress != null){
-        var nextNode = aTag.nextSibling;
-        if (nextNode && nextNode.nodeType === Node.TEXT_NODE) {
-            emailAddress = nextNode.textContent.trim();
+    const result = {
+        ipAddress: null,
+        emailAddress: null
+    };
+    // 提取IP地址（支持IPv4和IPv6）
+    const ipPattern = /(?:(?:\d{1,3}\.){3}\d{1,3}|(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4})/g;
+    const ipElements = divElement.querySelectorAll('a[href^="/misc/ip-info"]');
+    
+    for (const element of ipElements) {
+        const match = element.textContent.trim().match(ipPattern);
+        if (match && match[0]) {
+        result.ipAddress = match[0];
+        break; 
         }
-    }else{
-        emailAddress = getTextContentUnderElement(divElement);
     }
-    return { ipAddress, emailAddress };
+    
+    // 同时检查div内的纯文本IP地址
+    const innerText = divElement.textContent.trim();
+    const innerIpMatch = innerText.match(ipPattern);
+    if (innerIpMatch && innerIpMatch[0]) {
+        result.ipAddress = innerIpMatch[0];
+    }
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const allTextNodes = divElement.childNodes;
+    for (const node of allTextNodes) {
+        if (node.nodeType === Node.TEXT_NODE) {
+        const textContent = node.textContent.trim();
+        const emailMatch = textContent.match(emailPattern);
+        if (emailMatch && emailMatch[0]) {
+            result.emailAddress = emailMatch[0];
+            break;
+        }
+        } else if (node.nodeType === Node.ELEMENT_NODE && node.tagName.toLowerCase() === 'a' && node.href.startsWith('mailto:')) {
+        const mailtoEmail = node.href.replace('mailto:', '').trim();
+        const emailMatchFromLink = mailtoEmail.match(emailPattern);
+        if (emailMatchFromLink && emailMatchFromLink[0]) {
+            result.emailAddress = emailMatchFromLink[0];
+            break;
+        }
+        }
+    }
+    return result;
 }
 // 提取邮箱域名
 function extractEmailDomain(email) {
@@ -636,6 +647,7 @@ function identifyIP(ipString) {
         return "其他";
     }
 }
+
 
 // 封装 GM_xmlhttpRequest 为一个返回 Promise 的函数
 function fetchIpAddressIPV6(ip) {
@@ -680,8 +692,6 @@ function fetchIpAddressIPV4(ip) {
         });
     });
 }
-
-// 违禁词请求
 function fetchProhibitedWords(messageContent, publisherName) {
     return new Promise((resolve, reject) => {
         const url = `${PROHIBITEDWORDS_URL}`; 
@@ -708,7 +718,6 @@ function fetchProhibitedWords(messageContent, publisherName) {
     });
 }
 
-
 /*
     样式注入
 */
@@ -722,6 +731,7 @@ let body_el = document.querySelector('body');
 let pageContent_el = document.querySelector('.p-body-pageContent');
 // 新建的和筛选bar相同的块
 let menu_bar = createElement_simpleBlock();
+// 获取菜单bar的最后一层
 let menu_bar_content = menu_bar.getContentElement();
 
 
@@ -729,7 +739,7 @@ let menu_bar_content = menu_bar.getContentElement();
 let approvalAllButton_el = createElement_simplButton('一键批准', function (event) {
     for (let i = 0; i < blockArrayList.length - 1; i++) {
         let block = blockArrayList[i];
-        selectOperation(block, "批准");
+        selectOperation(block, AUTO_APPROVE_BUTTON_TEXT);
     }
     if(blockArrayList.length > 1){
         approvalFrequency(blockArrayList.length - 1);
@@ -740,25 +750,22 @@ let approvalAllButton_el = createElement_simplButton('一键批准', function (e
 // 创建菜单按钮
 let menuButton_el = createElement_simplButton('功能菜单', function () {
     GM_log('功能菜单被点击, 唤起菜单');
-    let menuContainer = createElement_simpleContainerOfSetting("功能菜单 - 风纪委员综合插件");
+    let menuContainer = createElement_simpleContainerOfSetting("功能菜单 - MineBBS审核辅助综合插件");
     body_el.insertBefore(menuContainer, body_el.firstChild)
 })
 
-// 添加按钮到bar
 menu_bar_content.appendChild(approvalAllButton_el);
 menu_bar_content.appendChild(menuButton_el);
-
-// 将新建的菜单条载入页面
 pageContent_el.insertBefore(menu_bar, pageContent_el.childNodes[2])
+
 
 // 待审核块
 let pendingReviewBlock = [];
  
-// 遍历审核块, 剔除保存块    
+// 遍历审核块, 剔除保存块    帖子 个人空间评论 会员  资源   资源更新   资源版本  个人空间留言   
 for (let i = 0; i < blockArrayList.length - 1; i++) {
     let block = blockArrayList[i];
     if(block.querySelector('.message-attribution-opposite') == null){
-        // 遇到了封面, 不处理
         continue;
     }
     let pendingReviewBlockObject = {
@@ -821,10 +828,8 @@ async function fetchAndProcessEachIpAddressConcurrently(userDataList) {
             result = await genIterator.next();
             if (!result.done) {
                 let res = result.value;
-                // 处理用户块违禁词, 用户中不包含内容的才需要处理, 有内容的使用内容异步进行违禁词管理
                 let prohibitedWordsFlag = false; 
                 if(res.messageContent == ''){
-                    // 名字申请, 功能必须要有一个打开才能发起请求
                     if(conf.shortContentAccurateMode || conf.shortContentFuzzyMode){
                         let res_pw = await fetchProhibitedWords('',res.publisherName);
                         let prohibitedWords_innerHTML = '';
@@ -836,89 +841,128 @@ async function fetchAndProcessEachIpAddressConcurrently(userDataList) {
                             prohibitedWords_innerHTML += ` 名称模糊违禁词: <span style='color:red'>${(res_pw.shortContentFuzzy).join(',')}</span>`
                             prohibitedWordsFlag = true;
                         }
-                        // 旗帜被打开, 说明有违禁名称
                         if(prohibitedWordsFlag){
-                            let infoBlock_prohibitedWords = infoBlock(prohibitedWords_innerHTML,['highlighted','warning']);
+                            let infoBlock_prohibitedWords = createInfoBlock(['highlighted','warning']);
+                            infoBlock_prohibitedWords.appendInfo(prohibitedWords_innerHTML);
                             let block = blockArrayList[res.id];
                             let messageContent = block.querySelector('.message-content')
                             messageContent.insertBefore(infoBlock_prohibitedWords,messageContent.firstChild)
-                            selectOperation(block,'无操作');
+                            selectOperation(block,NO_OPERATION_BUTTON_TEXT);
                         }
                     }
                 }
-
-                // 处理Email, 默认表示不符合条件
-                let flag_Email = false;
+                let isEmailInWhiteList = false;
                 if(conf.emailMode){ 
                     let eDomain = extractEmailDomain(res.email);
                     if (eDomain != null) {
                         if (conf.getEmailListArray().includes(eDomain)) {
-                            flag_Email = true;
+                            isEmailInWhiteList = true;
                         }
                     }
                 }
 
                 // 处理IP, 默认表示IP正常
-                let flag_IP = false;
+                let isIPInWhiteList = false;
                 if(conf.ipCheck){
                     if (res.hasOwnProperty('ipAddressInfo')) {
                         let ip_Address = res.ipAddressInfo;
                         if (ip_Address.trim().includes("China") || ip_Address.trim().startsWith("中国")) {
-                            flag_IP = true;
+                            isIPInWhiteList = true;
                         }
                     }
                 }
 
                 // 自动批准
                 if (conf.autoApprove) {
-                    if (flag_IP & flag_Email && !prohibitedWordsFlag) {
+                    if (isIPInWhiteList & isEmailInWhiteList && !prohibitedWordsFlag) {
                         let block = blockArrayList[res.id];
-                        selectOperation(block, '批准');
+                        selectOperation(block, AUTO_APPROVE_BUTTON_TEXT);
                         approvalFrequency(1)
                     }
                 }
 
-                // 渲染内容到页面
-                let emailAndIpHint = null;
-                if (conf.ipCheck & conf.emailMode) {
-                    if (flag_IP & flag_Email) {
-                        emailAndIpHint = infoBlock(`${res.ipAddressInfo}   |    ${res.email}在预设白名单内`, ['moderated']);
-                    } else if (flag_IP && !flag_Email) {
-                        emailAndIpHint = infoBlock(`${res.ipAddressInfo}    |    <span style="color:red">${res.email}不在白名单</span>`, ['warning', 'highlighted']);
-                    } else if (!flag_IP && flag_Email) {
-                        emailAndIpHint = infoBlock(`${res.ipAddressInfo}    |    <span style="color:#384764">${res.email}在预设白名单内</span>`, ['warning', 'highlighted'], 'red');
+                const ipCheckAndEmailMode = {
+                    bothOn: conf.ipCheck && conf.emailMode,
+                    ipOnEmailOff: conf.ipCheck && !conf.emailMode,
+                    ipOffEmailOn: !conf.ipCheck && conf.emailMode,
+                    bothOff: !conf.ipCheck && !conf.emailMode,
+                  };
+                  
+                  let emailAndIpHint;
+                  let classes = ['warning', 'highlighted'];
+                  
+                  if (ipCheckAndEmailMode.bothOn) {
+                    if (isIPInWhiteList && isEmailInWhiteList) {
+                        // IP和邮箱都在白名单
+                        emailAndIpHint = createInfoBlock(['moderated']);
+                        emailAndIpHint.appendInfo(`<span>${res.ipAddressInfo}</span> | <span>${res.email}在预设白名单内</span>`)
+        
+                    } else if (isIPInWhiteList) {
+                        // 只有IP通过了, 邮箱不在白名单
+                        emailAndIpHint = createInfoBlock(classes);
+                        emailAndIpHint.appendInfo(`<span>${res.ipAddressInfo}</span> | <span style="color:red">${res.email}不在白名单</span>`)
+                    } else if (isEmailInWhiteList) {
+                        // 只有邮箱通过了, IP不通过
+                        emailAndIpHint = createInfoBlock(classes);
+                        emailAndIpHint = createInfoBlock(`<span style="color:red">${res.ipAddressInfo}</span> | <span>${res.email}在预设白名单内</span>`, ['moderated']);
                     } else {
-                        emailAndIpHint = infoBlock(`${res.ipAddressInfo}    |     ${res.email}不在白名单`, [], 'red');
+                        // 都没通过
+                      emailAndIpHint = createInfoBlock(classes);
+                      emailAndIpHint.appendInfo(`<span style="color:red">${res.ipAddressInfo}</span> | <span style="color:red">${res.email}不在白名单</span>`);
                     }
-                } else if (conf.ipCheck & !conf.emailMode) {
-                    if (flag_IP) {
-                        emailAndIpHint = infoBlock(`${res.ipAddressInfo}`, ['moderated']);
+                  } else if (ipCheckAndEmailMode.ipOnEmailOff) { 
+                    // IP通过
+                    if (isIPInWhiteList) {
+                        emailAndIpHint = createInfoBlock(['moderated']);
+                        emailAndIpHint.appendInfo(`<span>${res.ipAddressInfo}</span>`);
                     } else {
-                        emailAndIpHint = infoBlock(`${res.ipAddressInfo}`, ['warning', 'highlighted'], 'red');
+                        // IP没通过
+                        emailAndIpHint = createInfoBlock(classes);
+                        emailAndIpHint.appendInfo(`<span style="color:red">${res.ipAddressInfo}</span>`);
                     }
-                } else if (!conf.ipCheck & conf.emailMode) {
-                    if (flag_Email) {
-                        emailAndIpHint = infoBlock(`${res.email}在预设白名单内`, ['moderated']);
+                  } else if (ipCheckAndEmailMode.ipOffEmailOn) { // IP开关关闭, 邮箱开关开启
+                    if (isEmailInWhiteList) {
+                        // 邮箱通过
+                        emailAndIpHint = createInfoBlock(['moderated']);
+                        emailAndIpHint.appendInfo(`<span>${res.email}在预设白名单内</span>`);
                     } else {
-                        emailAndIpHint = infoBlock(`<span style="color:red">${res.email}不在白名单</span>`, ['warning', 'highlighted']);
+                        // 邮箱没通过
+                        emailAndIpHint = createInfoBlock(classes);
+                        emailAndIpHint.appendInfok(`<span style="color:red">${res.email}不在白名单</span>`);
+
                     }
-                }
-                if (emailAndIpHint != null) {
-                    let block = blockArrayList[res.id];
-                    let messageContent = block.querySelector('.message-content')
-                    messageContent.insertBefore(emailAndIpHint,messageContent.firstChild)
-                }
+                  }
+                  
+                  if (emailAndIpHint !== null) {
+                    const block = blockArrayList[res.id];
+                    const messageContent = block.querySelector('.message-content');
+                    messageContent.insertBefore(emailAndIpHint, messageContent.firstChild);
+                  }
+                
+                
+                
             }
         } while (!result.done);
-    })) {}
+    })) {
+        
+    }
 }
 
-// 筛选出 type 为 '会员' 的对象，并确保它们都有ip属性
-const memberObjectsWithIp = pendingReviewBlock
-    .filter(item => item.type === '会员' && item.ip)
-    .map(member => ({ ...member }));
-fetchAndProcessEachIpAddressConcurrently(memberObjectsWithIp);
+async function processAllBatchesUsers() {
+    // 筛选出 type 为 '会员' 的对象，并确保它们都有ip属性
+    const memberObjectsWithIp = pendingReviewBlock
+        .filter(item => item.type === '会员' && item.ip)
+        .map(member => ({ ...member }));
 
+    // 分批使用处理用户IP
+    for (let i = 0; i < memberObjectsWithIp.length; i += BATCH_SIZE_IP) {
+        const batch = memberObjectsWithIp.slice(i, i + BATCH_SIZE_IP);
+        await fetchAndProcessEachIpAddressConcurrently(batch);
+    }
+}
+
+// 调用封装好的异步函数处理所有批次
+processAllBatchesUsers();
 
 // 处理违禁词
 async function* asyncGeneratorForProhibitedWords(ReviewBlock) {
@@ -935,6 +979,7 @@ async function* asyncGeneratorForProhibitedWords(ReviewBlock) {
         yield {...ReviewBlock,ProhibitedWordsArr: null };
     }
 }
+
 // 使用异步生成器函数
 async function fetchAndProcessEachProhibitedWordsConcurrently(pendingReviewBlock) {
     for await (const ReviewBlock of pendingReviewBlock.flatMap(async block => {
@@ -961,29 +1006,34 @@ async function fetchAndProcessEachProhibitedWordsConcurrently(pendingReviewBlock
                 }
                 if(prohibitedWordsFlag){
                     // 渲染到页面
-                    let infoBlock_prohibitedWords = infoBlock(prohibitedWords_innerHTML,['highlighted','warning']);
+                    let infoBlock_prohibitedWords = createInfoBlock(['highlighted','warning']);
+                    infoBlock_prohibitedWords.appendInfo(prohibitedWords_innerHTML);
                     let block = blockArrayList[res.id];
+                    
                     let messageContent = block.querySelector('.message-content')
                     messageContent.insertBefore(infoBlock_prohibitedWords,messageContent.firstChild)
-                    selectOperation(block,'无操作')
+                    selectOperation(block,NO_OPERATION_BUTTON_TEXT)
                     
-                }else{
-                    if(conf.autoApprove){
-                        let block = blockArrayList[res.id];
-                        selectOperation(block,'批准')
-                        approvalFrequency(1)
-                    }
                 }
             }
         } while (!result.done);
-    })) {}
+    })) {
+    }
 }
 
-// 筛出有内容的审核块
-const notEmptyMessageObjects = pendingReviewBlock.filter(item => item.hasOwnProperty('messageContent') && item.messageContent.trim());
-// 内容审核
-fetchAndProcessEachProhibitedWordsConcurrently(notEmptyMessageObjects)
+async function processAllBatchesProhibitedWords() {
+    // 筛出没有内容的审核块
+    const notEmptyMessageObjects = pendingReviewBlock.filter(item => item.hasOwnProperty('messageContent') && item.messageContent.trim());
 
+    // 分批使用处理用户IP
+    for (let i = 0; i < notEmptyMessageObjects.length; i += BATCH_SIZE) {
+        const batch = notEmptyMessageObjects.slice(i, i + BATCH_SIZE);
+        await fetchAndProcessEachProhibitedWordsConcurrently(batch);
+    }
+}
+
+// 调用封装好的异步函数处理所有批次
+processAllBatchesProhibitedWords();
 
 /**
  * 删除本脚本创建的所有持久化数据
@@ -995,8 +1045,9 @@ function removeAllValues() {
     }
 }
 
-// 拟真一个信息框
-function infoBlock(innerHTML, status = [], color = "#384764") {
+
+// 拟真一个信息框,并且可以持续添加内容
+function createInfoBlock(status = []) {
     // highlighted 已审核(绿盾牌 变灰色)
     // moderated  已处理(绿色小盾牌)
     // warning 警告小图标(绿色警告标)
@@ -1006,12 +1057,16 @@ function infoBlock(innerHTML, status = [], color = "#384764") {
     for (let i = 0; i < status.length; i++) {
         divElement.classList.add(`messageNotice--${status[i]}`);
     }
-    let infoElement = document.createElement('span')
-    infoElement.style.color = color;
-    infoElement.innerHTML = innerHTML;
-    divElement.appendChild(infoElement);
+    divElement.appendInfo = function (info) {
+        let pElement = document.createElement('span');
+        pElement.innerHTML = info;
+        this.appendChild(pElement);
+    }
+    
     return divElement;
 }
+
+
 
 // 去除论坛内部链接和白名单链接
 function urlsToRemove(linkArray){
@@ -1026,13 +1081,14 @@ function urlsToRemove(linkArray){
   
   // 新建一个数组存放过滤后的链接
   let filteredLinks = [];
+  
   // 迭代链接数组
   for(let link of linkArray) {
-    // 确保链接以'http://'或'https://'开头，并且不以白名单中的链接开头
     if((link.startsWith('http://') || link.startsWith('https://')) && !whitelistStartsWith.some(prefix => link.startsWith(prefix))) {
       filteredLinks.push(link);
     }
   }
+  
   return filteredLinks;
 }
 
@@ -1041,18 +1097,27 @@ function getAllUrlsUnderElement(element) {
     let urls = [];
     if(element == null) return urls;
     Array.from(element.querySelectorAll('*')).forEach(node => {
+        // 遍历元素的所有属性
         for (let attr of node.attributes) {
+        // 检查属性值是否包含http(s)链接
         const maybeUrl = attr.value.match(/https?:\/\/[\w./]+/g);
         if (maybeUrl) {
             urls.push(...maybeUrl);
         }
         }
+
+        // 如果是a标签且href存在，则提取链接
         if (node.tagName.toLowerCase() === 'a' && node.hasAttribute('href')) {
         urls.push(node.getAttribute('href'));
         }
+
+        // 递归查找子元素中的链接
         urls = urls.concat(getAllUrlsUnderElement(node));
     });
+
+    // 清理门户
     urls = urlsToRemove(urls);
+
     return urls;
 }
   
@@ -1061,15 +1126,23 @@ function getAllUrlsUnderElement(element) {
 function wordsToRemoveTextContent(text){
     // 要被移除掉的单词
     let wordsToRemove = ["更改日志","字段名称","旧值","新值","QQ","BiliBili主页","个人信息","下载","用户名","手机号码","邮箱","邮件选项","头像","接收新闻和更新电子邮件","接收活动摘要电子邮件","头像日期","空间封面","出生日期","显示生日","显示出生年份","所在地","主页","性别","Xbox ID","Github主页","字号","风格","语言","接收新闻和更新电子邮件","接收活动摘要电子邮件","收到私信消息后邮件提醒","回复内容接收邮件提醒","回复内容接收邮件提醒","显示他人的签名","点击展开...","阅读关于此资源更多信息...","推广者"]
+
+    // 创建一个用于替换的正则表达式，其中wordsToMatch是一个包含所有转义过的关键词的正则
     let wordsAndPhrasesToMatch = wordsToRemove.flatMap(w => {
+        // 对于包含特殊字符的短语，使用引号包裹并转义内部特殊字符
         if (/\W/.test(w)) {
             return [w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')];
         } else {
+            // 对于普通单词，使用单词边界`\b`
             return [`\\b${w}\\b`];
         }
     });
+
     let regex = new RegExp(wordsAndPhrasesToMatch.join('|'), 'gi');
+
+    // 替换匹配的内容为空字符串
     let newText = text.replace(regex, '');
+
     return newText;
 }
 
@@ -1078,6 +1151,7 @@ function getTextContentUnderElement(element) {
     
     let textContent = '';
     if(element == null) return '';
+    // 遍历元素及其所有后代元素
     const nodes = element.childNodes;
     for (let i = 0; i < nodes.length; ++i) {
         const node = nodes[i];
@@ -1087,7 +1161,6 @@ function getTextContentUnderElement(element) {
             textContent += getTextContentUnderElement(node);
         }
     }
+
     return textContent;
 }
-
-
